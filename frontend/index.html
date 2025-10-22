@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TON Trivia Battle</title>
+    <!-- Include Telegram WebApp SDK to interact with Telegram. -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Include TonConnect UI from CDN. -->
+    <script src="https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.min.js"></script>
+    <!-- Include React and ReactDOM from a CDN. If you prefer not to use React, you can replace this with plain JS. -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <style>
+      /* Basic styling for the mini app */
+      body {
+        margin: 0;
+        font-family: sans-serif;
+        background-color: #f3f4f6;
+      }
+      #root {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 16px;
+      }
+      .card {
+        background-color: #fff;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      .button {
+        background-color: #3b82f6;
+        color: white;
+        padding: 12px 18px;
+        border-radius: 8px;
+        margin-top: 12px;
+        display: inline-block;
+        cursor: pointer;
+        text-align: center;
+      }
+      .button:disabled {
+        background-color: #9ca3af;
+        cursor: not-allowed;
+      }
+      .option {
+        padding: 10px;
+        background-color: #e5e7eb;
+        border-radius: 8px;
+        margin-bottom: 8px;
+        cursor: pointer;
+      }
+      .option:hover {
+        background-color: #d1d5db;
+      }
+      .score-board {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .player-score {
+        flex: 1;
+        margin: 0 4px;
+        padding: 12px;
+        border-radius: 8px;
+        background-color: #e5e7eb;
+        text-align: center;
+      }
+      .player-score.you {
+        background-color: #dcfce7;
+      }
+      .player-score.opponent {
+        background-color: #fee2e2;
+      }
+      .player-score .label {
+        font-size: 0.9rem;
+        color: #374151;
+      }
+      .player-score .score-value {
+        font-size: 2rem;
+        font-weight: bold;
+        color: #111827;
+      }
+
+      /* Styling for leaderboard table */
+      .leaderboard-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 12px;
+      }
+      .leaderboard-table th,
+      .leaderboard-table td {
+        padding: 8px;
+        text-align: left;
+        border-bottom: 1px solid #e5e7eb;
+      }
+      .leaderboard-table th {
+        background-color: #f3f4f6;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Root element for the React application. -->
+    <div id="root"></div>
+    <script type="module">
+      // Use an ES module to import TonConnectUI. When bundling your app, you can use the npm package instead.
+      import { TonConnectUI } from "https://unpkg.com/@tonconnect/ui@latest/dist/tonconnect-ui.modern.js?module";
+
+      // Initialize Telegram WebApp API and expand the mini app to full height.
+      const tg = window.Telegram.WebApp;
+      tg.ready();
+      tg.expand();
+
+      // URL to your TonConnect manifest file. Replace this with the actual URL where you will host the file.
+      const manifestUrl = "https://your-host.com/tonconnect-manifest.json";
+
+      // Instantiate TonConnect UI. You can optionally specify a buttonRootId, but for a custom button we call openModal manually.
+      const tonConnectUI = new TonConnectUI({ manifestUrl });
+
+      function App() {
+        const [stage, setStage] = React.useState("connect");
+        const [walletInfo, setWalletInfo] = React.useState(null);
+        const [questions, setQuestions] = React.useState([]);
+        const [current, setCurrent] = React.useState(0);
+        const [score, setScore] = React.useState({ user: 0, opponent: 0 });
+        const [loading, setLoading] = React.useState(false);
+        const [category, setCategory] = React.useState("general");
+        const [stake, setStake] = React.useState(1);
+        // Leaderboard data: array of {player, score, rank}
+        const [leaderboard, setLeaderboard] = React.useState([]);
+
+        // Listen for TonConnect status changes. When a wallet is connected, update our state and show the lobby.
+        React.useEffect(() => {
+          const off = tonConnectUI.onStatusChange((wallet) => {
+            setWalletInfo(wallet);
+            if (wallet) {
+              setStage("lobby");
+            } else {
+              setStage("connect");
+            }
+          });
+          return () => off();
+        }, []);
+
+        // Handler to open the TonConnect modal programmatically. This will display a list of wallets for the user to connect.
+        const connectWallet = async () => {
+          try {
+            await tonConnectUI.openModal();
+          } catch (err) {
+            tg.showAlert("C\u00fc\u00bczdan ba\u011flan\u0131rken bir hata olu\u015ftu: " + err.message);
+          }
+        };
+
+        // Fetch questions from the backend and start a new game.
+        const startGame = async () => {
+          setLoading(true);
+          try {
+            // request questions for the selected category
+            const res = await fetch(`/questions?category=${encodeURIComponent(category)}`);
+            const data = await res.json();
+            setQuestions(data.questions || []);
+            setCurrent(0);
+            setScore({ user: 0, opponent: 0 });
+            setStage("game");
+          } catch (err) {
+            tg.showAlert("Sorular al\u0131namad\u0131: " + err.message);
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        // Handle user selecting an answer for the current question.
+        const handleAnswer = (index) => {
+          const q = questions[current];
+          if (!q) return;
+          let { user, opponent } = score;
+          // Award a point if the user selected the correct answer.
+          if (index === q.correctIndex) {
+            user += 1;
+          }
+          // Opponent randomly chooses an answer. This is a placeholder for actual opponent logic.
+          const oppGuess = Math.floor(Math.random() * q.options.length);
+          if (oppGuess === q.correctIndex) {
+            opponent += 1;
+          }
+          setScore({ user, opponent });
+          // Move to the next question, or finish the game if all questions have been answered.
+          if (current + 1 < questions.length) {
+            setCurrent(current + 1);
+          } else {
+            submitResult({ user, opponent });
+            setStage("result");
+          }
+        };
+
+        // Send the game result to the backend and to the Telegram bot.
+        const submitResult = async (finalScore) => {
+          // Send to backend for reward settlement (or logging)
+          fetch("/result", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ wallet: walletInfo, score: finalScore, stake, category }),
+          }).catch(() => {});
+          // Send data to bot via Telegram API
+          try {
+            tg.sendData(JSON.stringify({ score: finalScore }));
+          } catch (err) {
+            console.warn("Failed to send data via Telegram", err);
+          }
+        };
+
+        // Determine the end-of-game message.
+        const resultMessage = React.useMemo(() => {
+          if (score.user > score.opponent) return "Tebrikler! Kazand\u0131n\u0131z.";
+          if (score.user < score.opponent) return "\u00dczg\u00fcn\u00fcm, kaybettiniz.";
+          return "Berabere bitti!";
+        }, [score]);
+
+        // Fetch leaderboard from backend and display it
+        const openLeaderboard = async () => {
+          setLoading(true);
+          try {
+            const res = await fetch('/leaderboard');
+            const data = await res.json();
+            setLeaderboard(data.leaderboard || []);
+            setStage('leaderboard');
+          } catch (err) {
+            tg.showAlert("Liderlik tablosu al\u0131namad\u0131: " + err.message);
+          } finally {
+            setLoading(false);
+          }
+        };
+
+        return (
+          React.createElement('div', null,
+            stage === "connect" && React.createElement('div', { className: 'card' },
+              React.createElement('h2', null, 'TON Trivia Battle'),
+              React.createElement('p', null, 'Oynamak i\u00e7in c\u00fc\u00bczdan\u0131n\u0131z\u0131 ba\u011flay\u0131n.'),
+              React.createElement('div', {
+                className: 'button',
+                onClick: connectWallet,
+              }, 'C\u00fc\u00bczdan Ba\u011fla')
+            ),
+            stage === "lobby" && React.createElement('div', { className: 'card' },
+              React.createElement('h2', null, 'Haz\u0131r m\u0131s\u0131n\u0131z?'),
+              React.createElement('p', null, 'L\u00fctfen kategori se\u00e7in ve oyuna ba\u015flay\u0131n.'),
+              // Category selection buttons
+              React.createElement('div', null,
+                ['general','football','crypto'].map(cat =>
+                  React.createElement('div', {
+                    key: cat,
+                    className: 'button',
+                    style: { backgroundColor: category === cat ? '#2563eb' : '#3b82f6', marginRight: '8px', marginBottom: '8px' },
+                    onClick: () => setCategory(cat)
+                  }, cat.charAt(0).toUpperCase() + cat.slice(1))
+                )
+              ),
+              React.createElement('p', null, `Se\u00e7ilen Kategori: ${category.charAt(0).toUpperCase() + category.slice(1)}`),
+              React.createElement('div', {
+                className: 'button',
+                onClick: startGame,
+                disabled: loading,
+              }, loading ? 'E\u015fle\u015fiyor...' : 'Oyunu Ba\u015flat'),
+              // Button to view leaderboard
+              React.createElement('div', {
+                className: 'button',
+                onClick: openLeaderboard,
+                style: { backgroundColor: '#10b981', marginTop: '8px' },
+              }, 'Liderlik Tablosu')
+            ),
+            stage === "game" && questions.length > 0 && React.createElement('div', { className: 'card' },
+              React.createElement('div', { className: 'score-board' },
+                React.createElement('div', { className: 'player-score you' },
+                  React.createElement('div', { className: 'label' }, 'You'),
+                  React.createElement('div', { className: 'score-value' }, score.user)
+                ),
+                React.createElement('div', { className: 'player-score opponent' },
+                  React.createElement('div', { className: 'label' }, 'Opponent'),
+                  React.createElement('div', { className: 'score-value' }, score.opponent)
+                )
+              ),
+              React.createElement('h3', null, `Soru ${current + 1}`),
+              React.createElement('p', null, questions[current].question),
+              questions[current].options.map((opt, idx) => (
+                React.createElement('div', {
+                  key: idx,
+                  className: 'option',
+                  onClick: () => handleAnswer(idx),
+                }, opt)
+              ))
+            ),
+            stage === "result" && React.createElement('div', { className: 'card' },
+              React.createElement('h2', null, 'Oyun Sonucu'),
+              React.createElement('div', { className: 'score-board' },
+                React.createElement('div', { className: 'player-score you' },
+                  React.createElement('div', { className: 'label' }, 'You'),
+                  React.createElement('div', { className: 'score-value' }, score.user)
+                ),
+                React.createElement('div', { className: 'player-score opponent' },
+                  React.createElement('div', { className: 'label' }, 'Opponent'),
+                  React.createElement('div', { className: 'score-value' }, score.opponent)
+                )
+              ),
+              React.createElement('p', null, resultMessage),
+              React.createElement('div', {
+                className: 'button',
+                onClick: () => {
+                  setStage('lobby');
+                  setScore({ user: 0, opponent: 0 });
+                }
+              }, 'Tekrar Oyna'),
+              // Button to view leaderboard
+              React.createElement('div', {
+                className: 'button',
+                onClick: openLeaderboard,
+                style: { backgroundColor: '#10b981', marginTop: '8px' },
+              }, 'Liderlik Tablosu')
+            )
+            ,
+            // Leaderboard stage: show the ranking table
+            stage === "leaderboard" && React.createElement('div', { className: 'card' },
+              React.createElement('h2', null, 'Liderlik Tablosu'),
+              // Show the leaderboard as a table
+              React.createElement('table', { className: 'leaderboard-table' },
+                React.createElement('thead', null,
+                  React.createElement('tr', null,
+                    React.createElement('th', null, 'S\u0131ra'),
+                    React.createElement('th', null, 'Oyuncu'),
+                    React.createElement('th', null, 'Puan')
+                  )
+                ),
+                React.createElement('tbody', null,
+                  leaderboard.map(entry => {
+                    // Determine if this entry belongs to the currently connected wallet
+                    let isMe = false;
+                    if (walletInfo && walletInfo.account && walletInfo.account.address) {
+                      isMe = walletInfo.account.address === entry.player;
+                    }
+                    const shortened = entry.player && typeof entry.player === 'string'
+                      ? entry.player.slice(0, 6) + '...' + entry.player.slice(-4)
+                      : String(entry.player);
+                    return React.createElement('tr', {
+                      key: entry.player,
+                      style: { backgroundColor: isMe ? '#fef3c7' : 'transparent' }
+                    },
+                      React.createElement('td', null, entry.rank),
+                      React.createElement('td', null, shortened),
+                      React.createElement('td', null, entry.score)
+                    );
+                  })
+                )
+              ),
+              // Back button
+              React.createElement('div', {
+                className: 'button',
+                onClick: () => setStage('lobby'),
+                style: { marginTop: '12px' }
+              }, 'Geri')
+            )
+          )
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+    </script>
+  </body>
+</html>
